@@ -60,7 +60,7 @@ on:
         default: ""
       # --- deploy ---
       staging-url:
-        description: URL pública de staging (para el environment de GitHub)
+        description: URL pública de staging (por defecto, vars.STAGING_URL)
         type: string
         default: ""
 

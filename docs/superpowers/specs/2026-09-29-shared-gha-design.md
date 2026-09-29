@@ -51,7 +51,10 @@ resuelve al mismo repo y commit donde aparece la referencia):
   `docker-publish` (`vX.Y.Z`, `latest`) → `gh release create vX.Y.Z` → `coolify-deploy`
   (production, `require-secrets`, `wait`, health check).
 
-Valores que vienen de `vars` (GA, URL de producción) se pasan como inputs desde el consumidor.
+El job de deploy corre en el environment del repo consumidor y ve sus secrets y variables de
+repo y de environment (verificado con una prueba cruzada contra griferia-baru). Por eso la URL
+pública sale por defecto de `vars.PRODUCTION_URL`/`vars.STAGING_URL`. Lo que va en `with:` se
+evalúa en el job del consumidor, sin environment: `build-args` solo puede usar variables de repo.
 
 ## Consumidores
 

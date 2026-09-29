@@ -7,6 +7,9 @@ name: coolify-deploy
 #   COOLIFY_TOKEN            token de la API de Coolify
 #   COOLIFY_WEBHOOK_URL      webhook de la app de staging (secret del repo)
 #   COOLIFY_PROD_WEBHOOK_URL webhook de la app de producción (secret del environment `production`)
+#
+# La URL pública, si no llega como input, sale de la variable PRODUCTION_URL o STAGING_URL del
+# consumidor (de repo o del environment): el job corre en el environment del repo que llama.
 
 on:
   workflow_call:
@@ -16,7 +19,7 @@ on:
         type: string
         default: staging
       environment-url:
-        description: URL pública del ambiente; sin ella no hay health check
+        description: URL pública del ambiente (por defecto, vars.PRODUCTION_URL o vars.STAGING_URL); sin ella no hay health check
         type: string
         default: ""
       require-secrets:
@@ -44,7 +47,7 @@ jobs:
     permissions: {}
     environment:
       name: ${{ inputs.environment }}
-      url: ${{ inputs.environment-url }}
+      url: ${{ inputs.environment-url || (inputs.environment == 'production' && vars.PRODUCTION_URL || vars.STAGING_URL) }}
     steps:
       - name: Disparar deploy
         id: trigger
@@ -87,12 +90,16 @@ jobs:
 
       - name: Health check
         # Sin wait no se sabe cuándo quedó arriba la versión nueva: solo se revisa si se esperó.
-        if: inputs.wait && inputs.environment-url != '' && steps.trigger.outputs.skipped != 'true'
+        if: inputs.wait && steps.trigger.outputs.skipped != 'true'
         env:
-          URL: ${{ inputs.environment-url }}
+          URL: ${{ inputs.environment-url || (inputs.environment == 'production' && vars.PRODUCTION_URL || vars.STAGING_URL) }}
           HEALTH_PATH: ${{ inputs.health-path }}
           EXPECT: ${{ inputs.health-expect }}
         run: |
+          if [ -z "$URL" ]; then
+            echo "::notice::Sin URL pública (PRODUCTION_URL/STAGING_URL): se omite el health check."
+            exit 0
+          fi
           for _ in $(seq 1 12); do
             if body="$(curl -fsS "${URL%/}$HEALTH_PATH")" && { [ -z "$EXPECT" ] || grep -qF -- "$EXPECT" <<<"$body"; }; then
               echo "$body"

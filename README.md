@@ -71,7 +71,6 @@ jobs:
     with:
       dockerfile: docker/Dockerfile
       build-args: NEXT_PUBLIC_GA_ID=${{ vars.NEXT_PUBLIC_GA_ID }}
-      staging-url: ${{ vars.STAGING_URL }}
     secrets: inherit
 ```
 
@@ -104,7 +103,6 @@ jobs:
       tag: ${{ github.event.release.tag_name || inputs.tag }}
       dockerfile: docker/Dockerfile
       build-args: NEXT_PUBLIC_GA_ID=${{ vars.NEXT_PUBLIC_GA_ID }}
-      production-url: ${{ vars.PRODUCTION_URL }}
     secrets: inherit
 ```
 
@@ -120,14 +118,16 @@ de main (`gh release create v1.2.0-rc.1 --prerelease --target main --generate-no
 | `COOLIFY_WEBHOOK_URL` | secret | repo | Webhook de deploy de la app de **staging** |
 | `COOLIFY_PROD_WEBHOOK_URL` | secret | environment `production` | Webhook de deploy de la app de **producción** |
 | `NEXT_PUBLIC_GA_ID` | variable | repo | Measurement ID de GA4 (no es secreta; se hornea en build) |
-| `STAGING_URL` / `PRODUCTION_URL` | variable | repo | URL pública; en producción habilita el health check |
+| `STAGING_URL` / `PRODUCTION_URL` | variable | repo o environment | URL pública del environment; `PRODUCTION_URL` habilita el health check del release |
 
 - Sin `COOLIFY_WEBHOOK_URL`/`COOLIFY_TOKEN`, staging publica la imagen y avisa sin fallar (repo
   recién creado, aún sin app en Coolify). En producción faltar un secreto **falla**.
 - El environment `production` puede exigir aprobación manual antes del deploy
   (Settings → Environments → Required reviewers). `staging` se crea solo en el primer deploy.
-- Los valores que se pasan como `with:` (`build-args`, URLs) se leen de `vars` en el consumidor:
-  los valores de `vars` no se pasan solos a un workflow reutilizable.
+- El job de deploy corre en el environment del consumidor, así que ve sus secrets y variables
+  de repo **y** de environment (`COOLIFY_PROD_WEBHOOK_URL`, `PRODUCTION_URL`). Lo que va en
+  `with:` (como `build-args`) se evalúa en el job del consumidor, que no tiene environment:
+  ahí solo hay variables de repo.
 
 ## Catálogo
 
@@ -160,9 +160,10 @@ Output: `image`.
 
 **`coolify-deploy.yml`** — POST al webhook (Coolify 4.x), espera opcional al estado final del
 deployment y health check. Inputs: `environment` (`staging`; `production` usa
-`COOLIFY_PROD_WEBHOOK_URL`), `environment-url`, `require-secrets` (`false`), `wait` (`false`),
-`health-path` (`/api/health`), `health-expect` (texto que debe traer la respuesta). El health
-check solo corre con `wait` y `environment-url`.
+`COOLIFY_PROD_WEBHOOK_URL`), `environment-url` (por defecto `vars.PRODUCTION_URL` o
+`vars.STAGING_URL`), `require-secrets` (`false`), `wait` (`false`), `health-path`
+(`/api/health`), `health-expect` (texto que debe traer la respuesta). El health check solo
+corre con `wait` y una URL.
 
 ### Flujos
 
