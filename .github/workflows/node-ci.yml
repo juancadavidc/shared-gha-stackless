@@ -63,7 +63,7 @@ jobs:
       NEXT_TELEMETRY_DISABLED: 1
     steps:
       # fetch-depth 0: check-migrations compara contra la rama base o el commit previo.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -104,11 +104,11 @@ jobs:
           fi
 
       - if: steps.detect.outputs.pm == 'pnpm'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           package_json_file: ${{ inputs.working-directory }}/package.json
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.detect.outputs.version }}
           node-version-file: ${{ steps.detect.outputs.version-file }}
