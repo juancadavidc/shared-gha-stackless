@@ -1,0 +1,12 @@
+{
+  "name": "fixture-npm-subdir",
+  "private": true,
+  "scripts": {
+    "lint": "node -e \"console.log('lint ok')\"",
+    "typecheck": "node -e \"console.log('typecheck ok')\"",
+    "check-migrations": "node check-migrations.js",
+    "db:migrate": "node -e \"console.log('migrate ok')\"",
+    "test": "node --test",
+    "build": "node -e \"console.error('build no debió correr: está en skip-scripts'); process.exit(1)\""
+  }
+}

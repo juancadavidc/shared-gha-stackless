@@ -1,0 +1,195 @@
+name: release
+
+# Promueve un pre-release vX.Y.Z-<sufijo> (p. ej. v1.2.0-rc.1) a producción:
+#   validar el tag → CI y smoke sobre ese commit → imagen :vX.Y.Z + :latest → tag y release
+#   final vX.Y.Z → redeploy de la app de producción en Coolify → esperar → health check.
+#
+# `latest` = último release verificado; es lo que corre producción.
+#
+# El job que llama necesita `permissions: { contents: write, packages: write }` y
+# `secrets: inherit`. El webhook de producción vive como secret del environment `production`,
+# que además permite exigir aprobación manual (Settings → Environments → Required reviewers).
+#
+# Ojo: GitHub corre el workflow del consumidor tal como está en el commit del tag del RC.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag del pre-release a promover (p. ej. v1.0.0-rc.1)
+        type: string
+        required: true
+      # --- node-ci ---
+      working-directory:
+        type: string
+        default: .
+      node-version-file:
+        type: string
+        default: .nvmrc
+      node-version:
+        type: string
+        default: ""
+      postgres:
+        type: boolean
+        default: true
+      ci-env:
+        type: string
+        default: ""
+      skip-scripts:
+        type: string
+        default: ""
+      # --- image-smoke ---
+      smoke:
+        type: boolean
+        default: true
+      smoke-env:
+        type: string
+        default: ""
+      smoke-health-paths:
+        type: string
+        default: /api/health
+      smoke-port:
+        type: string
+        default: "3000"
+      # --- imagen ---
+      context:
+        type: string
+        default: .
+      dockerfile:
+        type: string
+        default: ""
+      service:
+        type: string
+        default: web
+      build-args:
+        type: string
+        default: ""
+      # --- deploy ---
+      production-url:
+        description: URL pública de producción; sin ella no hay health check
+        type: string
+        default: ""
+      health-path:
+        type: string
+        default: /api/health
+      health-expect:
+        type: string
+        default: ""
+
+jobs:
+  prepare:
+    name: Validar el tag del pre-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rc_tag: ${{ steps.parse.outputs.rc_tag }}
+      version: ${{ steps.parse.outputs.version }}
+      sha: ${{ steps.parse.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: parse
+        env:
+          RC_TAG: ${{ inputs.tag }}
+        run: |
+          # vX.Y.Z-<sufijo> → vX.Y.Z (se conserva el prefijo "v" si lo trae).
+          if [[ ! "$RC_TAG" =~ ^(v?[0-9]+\.[0-9]+\.[0-9]+)-[0-9A-Za-z.-]+$ ]]; then
+            echo "::error::'$RC_TAG' no es un tag de pre-release (esperado vX.Y.Z-rc.N)"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "::error::El tag $version ya existe: esta versión ya se publicó"
+            exit 1
+          fi
+          if ! sha="$(git rev-parse -q --verify "refs/tags/$RC_TAG^{commit}")"; then
+            echo "::error::No existe el tag $RC_TAG"
+            exit 1
+          fi
+          {
+            echo "rc_tag=$RC_TAG"
+            echo "version=$version"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "Promoviendo $RC_TAG ($sha) → $version" >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    needs: prepare
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      working-directory: ${{ inputs.working-directory }}
+      node-version-file: ${{ inputs.node-version-file }}
+      node-version: ${{ inputs.node-version }}
+      postgres: ${{ inputs.postgres }}
+      env: ${{ inputs.ci-env }}
+      skip-scripts: ${{ inputs.skip-scripts }}
+
+  smoke:
+    needs: prepare
+    if: inputs.smoke
+    uses: ./.github/workflows/image-smoke.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-args: ${{ inputs.build-args }}
+      env: ${{ inputs.smoke-env }}
+      health-paths: ${{ inputs.smoke-health-paths }}
+      port: ${{ inputs.smoke-port }}
+      postgres: ${{ inputs.postgres }}
+
+  publish:
+    needs: [prepare, ci, smoke]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.ci.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.smoke.result) }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      service: ${{ inputs.service }}
+      build-args: ${{ inputs.build-args }}
+      # La versión queda fija para rollback; `latest` es lo que despliega producción.
+      tags: ${{ needs.prepare.outputs.version }} latest
+
+  release:
+    name: Crear tag y release final
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RC_TAG: ${{ needs.prepare.outputs.rc_tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          # Notas desde el último release final (si existe), no desde el primer commit.
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "$VERSION" \
+            --latest \
+            --generate-notes \
+            ${prev:+--notes-start-tag "$prev"} \
+            --notes "Promovido desde el pre-release $RC_TAG. Imagen: \`${IMAGE}:${VERSION}\`."
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/coolify-deploy.yml
+    with:
+      environment: production
+      environment-url: ${{ inputs.production-url }}
+      require-secrets: true
+      wait: true
+      health-path: ${{ inputs.health-path }}
+      health-expect: ${{ inputs.health-expect }}
+    secrets: inherit

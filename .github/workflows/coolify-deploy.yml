@@ -1,0 +1,104 @@
+name: coolify-deploy
+
+# Dispara el redeploy de una app "Docker Image" de Coolify (que hace pull de la imagen ya
+# publicada), espera opcionalmente a que termine y revisa el health de la URL pública.
+#
+# Secretos (llegan con `secrets: inherit`):
+#   COOLIFY_TOKEN            token de la API de Coolify
+#   COOLIFY_WEBHOOK_URL      webhook de la app de staging (secret del repo)
+#   COOLIFY_PROD_WEBHOOK_URL webhook de la app de producción (secret del environment `production`)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment de GitHub; `production` usa COOLIFY_PROD_WEBHOOK_URL, cualquier otro COOLIFY_WEBHOOK_URL
+        type: string
+        default: staging
+      environment-url:
+        description: URL pública del ambiente; sin ella no hay health check
+        type: string
+        default: ""
+      require-secrets:
+        description: Si faltan los secretos, falla (true) o avisa y no despliega (false)
+        type: boolean
+        default: false
+      wait:
+        description: Espera a que el deployment de Coolify termine (hasta 10 min)
+        type: boolean
+        default: false
+      health-path:
+        description: Ruta del health check sobre environment-url
+        type: string
+        default: /api/health
+      health-expect:
+        description: Texto que debe aparecer en la respuesta del health (vacío = basta con 2xx)
+        type: string
+        default: ""
+
+jobs:
+  deploy:
+    name: Deploy en Coolify (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment-url }}
+    steps:
+      - name: Disparar deploy
+        id: trigger
+        env:
+          WEBHOOK: ${{ inputs.environment == 'production' && secrets.COOLIFY_PROD_WEBHOOK_URL || secrets.COOLIFY_WEBHOOK_URL }}
+          TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          REQUIRED: ${{ inputs.require-secrets }}
+        # Coolify 4.x registra /api/v1/deploy como POST (con GET responde 405).
+        run: |
+          if [ -z "$WEBHOOK" ] || [ -z "$TOKEN" ]; then
+            msg="Sin webhook o COOLIFY_TOKEN para este ambiente: no se dispara el deploy. Corre /coolify-deploy."
+            if [ "$REQUIRED" = "true" ]; then echo "::error::$msg"; exit 1; fi
+            echo "::warning::$msg"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          response="$(curl --fail-with-body -sS -X POST -H "Authorization: Bearer $TOKEN" "$WEBHOOK")"
+          echo "$response"
+          echo "deployment_uuid=$(jq -r '.deployments[0].deployment_uuid // empty' <<<"$response")" >> "$GITHUB_OUTPUT"
+
+      - name: Esperar a que Coolify termine
+        if: inputs.wait && steps.trigger.outputs.deployment_uuid != ''
+        env:
+          WEBHOOK: ${{ inputs.environment == 'production' && secrets.COOLIFY_PROD_WEBHOOK_URL || secrets.COOLIFY_WEBHOOK_URL }}
+          TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          DEPLOYMENT: ${{ steps.trigger.outputs.deployment_uuid }}
+        run: |
+          api="${WEBHOOK%%/api/v1/*}/api/v1"
+          for i in $(seq 1 60); do
+            status="$(curl -sS -H "Authorization: Bearer $TOKEN" "$api/deployments/$DEPLOYMENT" | jq -r '.status // "desconocido"')"
+            echo "[$i] $status"
+            case "$status" in
+              finished) exit 0 ;;
+              failed|cancelled*) echo "::error::El deploy en Coolify terminó en '$status'"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::El deploy no terminó en 10 minutos"
+          exit 1
+
+      - name: Health check
+        # Sin wait no se sabe cuándo quedó arriba la versión nueva: solo se revisa si se esperó.
+        if: inputs.wait && inputs.environment-url != '' && steps.trigger.outputs.skipped != 'true'
+        env:
+          URL: ${{ inputs.environment-url }}
+          HEALTH_PATH: ${{ inputs.health-path }}
+          EXPECT: ${{ inputs.health-expect }}
+        run: |
+          for _ in $(seq 1 12); do
+            if body="$(curl -fsS "${URL%/}$HEALTH_PATH")" && { [ -z "$EXPECT" ] || grep -qF -- "$EXPECT" <<<"$body"; }; then
+              echo "$body"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::${URL%/}$HEALTH_PATH no respondió ok"
+          exit 1

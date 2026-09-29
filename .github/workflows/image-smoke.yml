@@ -1,0 +1,105 @@
+name: image-smoke
+
+# Construye la imagen sin publicarla, la arranca con la red del host (contra un Postgres
+# efímero si hace falta) y exige que cada ruta de health-paths responda 2xx.
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: Contexto del build de Docker
+        type: string
+        default: .
+      dockerfile:
+        description: Ruta del Dockerfile (por defecto, <context>/Dockerfile)
+        type: string
+        default: ""
+      build-args:
+        description: Build args, una línea KEY=VAL por arg
+        type: string
+        default: ""
+      env:
+        description: Líneas KEY=VAL con valores de mentira para el contenedor; pueden pisar DATABASE_URL
+        type: string
+        default: ""
+      health-paths:
+        description: Rutas que deben responder 2xx, separadas por espacio
+        type: string
+        default: /api/health
+      port:
+        description: Puerto en el que escucha la app dentro del contenedor
+        type: string
+        default: "3000"
+      postgres:
+        description: Levanta un Postgres efímero y le pasa DATABASE_URL=postgres://ci:ci@localhost:5432/ci
+        type: boolean
+        default: true
+      ref:
+        description: Commit, rama o tag a construir (por defecto, el del evento)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: La imagen arranca y responde
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: ${{ inputs.postgres && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          build-args: ${{ inputs.build-args }}
+          load: true
+          tags: app:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Arrancar la imagen
+        env:
+          POSTGRES: ${{ inputs.postgres }}
+          EXTRA_ENV: ${{ inputs.env }}
+        run: |
+          env_file="$RUNNER_TEMP/smoke.env"
+          : > "$env_file"
+          if [ "$POSTGRES" = "true" ]; then
+            echo "DATABASE_URL=postgres://ci:ci@localhost:5432/ci" >> "$env_file"
+          fi
+          printf '%s\n' "$EXTRA_ENV" | grep -Ev '^[[:space:]]*(#|$)' >> "$env_file" || true
+          docker run -d --name app --network host --env-file "$env_file" app:smoke
+
+      - name: Health
+        env:
+          PATHS: ${{ inputs.health-paths }}
+          PORT: ${{ inputs.port }}
+        run: |
+          for path in $PATHS; do
+            ok=""
+            for _ in $(seq 1 30); do
+              if curl -fsS "http://localhost:$PORT$path"; then ok=1; echo; break; fi
+              sleep 2
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::$path no respondió 2xx en 60 s"
+              docker logs app
+              exit 1
+            fi
+          done

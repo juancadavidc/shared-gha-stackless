@@ -1,0 +1,7 @@
+FROM node:22-alpine
+WORKDIR /app
+COPY server.js .
+ARG FIXTURE_BUILD_ARG=""
+ENV FIXTURE_BUILD_ARG=$FIXTURE_BUILD_ARG
+EXPOSE 3000
+CMD ["node", "server.js"]

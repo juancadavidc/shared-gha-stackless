@@ -1,0 +1,174 @@
+name: node-ci
+
+# Verificación de un proyecto Node por convención de scripts: corre, en este orden, los que
+# existan en package.json — lint, typecheck, brand-lint, check-migrations <base>, db:migrate,
+# test, build — y se salta los que no. El gestor sale del lockfile (pnpm o npm).
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Carpeta del package.json, relativa a la raíz del repo
+        type: string
+        default: .
+      node-version-file:
+        description: Archivo con la versión de Node, relativo a la raíz del repo; si no existe se usa node-version
+        type: string
+        default: .nvmrc
+      node-version:
+        description: Versión de Node; gana sobre node-version-file. Sin ninguna de las dos, 22
+        type: string
+        default: ""
+      postgres:
+        description: Levanta un Postgres efímero y exporta DATABASE_URL=postgres://ci:ci@localhost:5432/ci
+        type: boolean
+        default: true
+      env:
+        description: Líneas KEY=VAL con valores de mentira (no secretos); pueden pisar DATABASE_URL
+        type: string
+        default: ""
+      ref:
+        description: Commit, rama o tag a verificar (por defecto, el del evento)
+        type: string
+        default: ""
+      skip-scripts:
+        description: Scripts de la convención que no se corren, separados por espacio o coma
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verificar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    services:
+      postgres:
+        # Con imagen vacía GitHub no levanta el servicio.
+        image: ${{ inputs.postgres && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      # fetch-depth 0: check-migrations compara contra la rama base o el commit previo.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Variables de entorno
+        env:
+          POSTGRES: ${{ inputs.postgres }}
+          EXTRA_ENV: ${{ inputs.env }}
+        run: |
+          if [ "$POSTGRES" = "true" ]; then
+            echo "DATABASE_URL=postgres://ci:ci@localhost:5432/ci" >> "$GITHUB_ENV"
+          fi
+          printf '%s\n' "$EXTRA_ENV" | grep -Ev '^[[:space:]]*(#|$)' >> "$GITHUB_ENV" || true
+
+      - name: Gestor de paquetes y versión de Node
+        id: detect
+        env:
+          VERSION_FILE: ${{ inputs.node-version-file }}
+          VERSION: ${{ inputs.node-version }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+            echo "lockfile=$WORKDIR/pnpm-lock.yaml" >> "$GITHUB_OUTPUT"
+          elif [ -f package-lock.json ]; then
+            echo "pm=npm" >> "$GITHUB_OUTPUT"
+            echo "lockfile=$WORKDIR/package-lock.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No hay pnpm-lock.yaml ni package-lock.json en $WORKDIR"
+            exit 1
+          fi
+          if [ -n "$VERSION" ]; then
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          elif [ -n "$VERSION_FILE" ] && [ -f "$GITHUB_WORKSPACE/$VERSION_FILE" ]; then
+            echo "version-file=$VERSION_FILE" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=22" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.detect.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.detect.outputs.version }}
+          node-version-file: ${{ steps.detect.outputs.version-file }}
+          cache: ${{ steps.detect.outputs.pm }}
+          cache-dependency-path: ${{ steps.detect.outputs.lockfile }}
+
+      - name: Instalar dependencias
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: |
+          if [ "$PM" = "pnpm" ]; then pnpm install --frozen-lockfile; else npm ci; fi
+
+      - name: Scripts presentes
+        id: scripts
+        env:
+          SKIP: ${{ inputs.skip-scripts }}
+        run: |
+          node -e '
+            const present = Object.keys(require("./package.json").scripts ?? {});
+            const skip = (process.env.SKIP ?? "").split(/[\s,]+/).filter(Boolean);
+            const order = ["lint", "typecheck", "brand-lint", "check-migrations", "db:migrate", "test", "build"];
+            const run = order.filter((s) => present.includes(s) && !skip.includes(s));
+            console.log("list=" + JSON.stringify(run));
+            console.error("Se corren: " + (run.join(", ") || "ninguno"));
+          ' >> "$GITHUB_OUTPUT"
+
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'lint')
+        run: ${{ steps.detect.outputs.pm }} run lint
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'typecheck')
+        run: ${{ steps.detect.outputs.pm }} run typecheck
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'brand-lint')
+        run: ${{ steps.detect.outputs.pm }} run brand-lint
+
+      - name: Migraciones solo aditivas
+        if: contains(fromJSON(steps.scripts.outputs.list), 'check-migrations')
+        # En PR se compara contra la rama base; en push, contra el commit previo del ref
+        # (github.event.before). Los valores de GitHub llegan por env, nunca interpolados.
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          zero="0000000000000000000000000000000000000000"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="origin/$BASE_REF"
+          elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "$zero" ]; then
+            echo "::warning::Sin commit 'before' válido (evento $EVENT_NAME o primer push del ref): se omite el check de migraciones."
+            exit 0
+          elif ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            echo "::warning::El commit 'before' ($BEFORE_SHA) no está en el historial (force-push): se omite el check de migraciones."
+            exit 0
+          else
+            base="$BEFORE_SHA"
+          fi
+          if [ "$PM" = "npm" ]; then npm run check-migrations -- "$base"; else pnpm run check-migrations "$base"; fi
+
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'db:migrate')
+        run: ${{ steps.detect.outputs.pm }} run db:migrate
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'test')
+        run: ${{ steps.detect.outputs.pm }} run test
+      - if: contains(fromJSON(steps.scripts.outputs.list), 'build')
+        run: ${{ steps.detect.outputs.pm }} run build

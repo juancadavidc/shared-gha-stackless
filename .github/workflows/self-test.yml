@@ -1,0 +1,53 @@
+name: self-test
+
+# CI del propio repo: lint de los workflows y los bloques corriendo contra las fixtures de
+# tests/fixtures. docker-publish y coolify-deploy se prueban en los repos consumidores.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: actionlint (con shellcheck)
+        run: |
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  node-ci-npm-subdir:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: tests/fixtures/npm-subdir
+      env: |
+        # los comentarios y líneas vacías se ignoran
+        FIXTURE_FLAG=hola
+
+        DATABASE_URL=postgres://ci:ci@localhost:5432/ci?fixture=1
+      skip-scripts: build
+
+  node-ci-pnpm-app:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: tests/fixtures/pnpm-app
+      node-version: "24"
+      postgres: false
+
+  image-smoke:
+    uses: ./.github/workflows/image-smoke.yml
+    with:
+      context: tests/fixtures/smoke-app
+      build-args: FIXTURE_BUILD_ARG=horneado
+      env: FIXTURE_FLAG=hola
+      health-paths: /health /health/db

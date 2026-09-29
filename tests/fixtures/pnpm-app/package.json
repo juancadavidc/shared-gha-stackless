@@ -1,0 +1,10 @@
+{
+  "name": "fixture-pnpm-app",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "lint": "node -e \"console.log('lint ok')\"",
+    "test": "node --test",
+    "build": "node -e \"console.log('build ok')\""
+  }
+}

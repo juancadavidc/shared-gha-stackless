@@ -1,0 +1,111 @@
+name: staging
+
+# Flujo de un merge a main: verificar → (smoke de la imagen) → publicar :staging y :<sha> →
+# redeploy de la app de staging en Coolify. `latest` nunca sale de aquí: es de producción y
+# solo lo mueve release.yml.
+#
+# El job que llama necesita `permissions: { contents: read, packages: write }` y
+# `secrets: inherit`.
+
+on:
+  workflow_call:
+    inputs:
+      # --- node-ci ---
+      working-directory:
+        type: string
+        default: .
+      node-version-file:
+        type: string
+        default: .nvmrc
+      node-version:
+        type: string
+        default: ""
+      postgres:
+        type: boolean
+        default: true
+      ci-env:
+        description: Líneas KEY=VAL no secretas para node-ci
+        type: string
+        default: ""
+      skip-scripts:
+        type: string
+        default: ""
+      # --- image-smoke ---
+      smoke:
+        description: Corre image-smoke antes de publicar
+        type: boolean
+        default: true
+      smoke-env:
+        description: Líneas KEY=VAL no secretas para el contenedor del smoke
+        type: string
+        default: ""
+      smoke-health-paths:
+        type: string
+        default: /api/health
+      smoke-port:
+        type: string
+        default: "3000"
+      # --- imagen ---
+      context:
+        type: string
+        default: .
+      dockerfile:
+        type: string
+        default: ""
+      service:
+        type: string
+        default: web
+      build-args:
+        type: string
+        default: ""
+      # --- deploy ---
+      staging-url:
+        description: URL pública de staging (para el environment de GitHub)
+        type: string
+        default: ""
+
+jobs:
+  ci:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      node-version-file: ${{ inputs.node-version-file }}
+      node-version: ${{ inputs.node-version }}
+      postgres: ${{ inputs.postgres }}
+      env: ${{ inputs.ci-env }}
+      skip-scripts: ${{ inputs.skip-scripts }}
+
+  smoke:
+    if: inputs.smoke
+    uses: ./.github/workflows/image-smoke.yml
+    with:
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-args: ${{ inputs.build-args }}
+      env: ${{ inputs.smoke-env }}
+      health-paths: ${{ inputs.smoke-health-paths }}
+      port: ${{ inputs.smoke-port }}
+      postgres: ${{ inputs.postgres }}
+
+  publish:
+    needs: [ci, smoke]
+    # smoke puede venir "skipped" (smoke: false); cualquier otro resultado bloquea.
+    if: ${{ !cancelled() && needs.ci.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.smoke.result) }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      service: ${{ inputs.service }}
+      build-args: ${{ inputs.build-args }}
+      tags: staging ${{ github.sha }}
+
+  deploy:
+    needs: publish
+    uses: ./.github/workflows/coolify-deploy.yml
+    with:
+      environment: staging
+      environment-url: ${{ inputs.staging-url }}
+    secrets: inherit
