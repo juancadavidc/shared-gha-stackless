@@ -119,6 +119,7 @@ de main (`gh release create v1.2.0-rc.1 --prerelease --target main --generate-no
 | `COOLIFY_PROD_WEBHOOK_URL` | secret | environment `production` | Webhook de deploy de la app de **producción** |
 | `NEXT_PUBLIC_GA_ID` | variable | repo | Measurement ID de GA4 (no es secreta; se hornea en build) |
 | `STAGING_URL` / `PRODUCTION_URL` | variable | repo o environment | URL pública del environment; `PRODUCTION_URL` habilita el health check del release |
+| `CI_RUNNER` | variable | repo | Etiqueta del runner de todos los jobs (p. ej. `home-pc`); sin ella, `ubuntu-latest` |
 
 - Sin `COOLIFY_WEBHOOK_URL`/`COOLIFY_TOKEN`, staging publica la imagen y avisa sin fallar (repo
   recién creado, aún sin app en Coolify). En producción faltar un secreto **falla**.
@@ -128,6 +129,19 @@ de main (`gh release create v1.2.0-rc.1 --prerelease --target main --generate-no
   de repo **y** de environment (`COOLIFY_PROD_WEBHOOK_URL`, `PRODUCTION_URL`). Lo que va en
   `with:` (como `build-args`) se evalúa en el job del consumidor, que no tiene environment:
   ahí solo hay variables de repo.
+
+### Runner
+
+Todos los bloques y flujos aceptan `runs-on` y eligen el runner con
+`inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest'`. Para mandar el CI de un repo **privado** a
+runners self-hosted basta con la variable del repo:
+
+```bash
+gh variable set CI_RUNNER --repo <owner>/<repo> --body home-pc    # y delete para volver
+```
+
+En repos públicos no: los minutos de GitHub ya son gratis y un PR desde un fork correría en el
+runner. Los runners del PC de la casa están en `home-runners`.
 
 ## Catálogo
 
