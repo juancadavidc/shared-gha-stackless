@@ -193,8 +193,17 @@ servicio en vez de usar los flujos.
 
 - `self-test.yml` corre actionlint y los bloques contra `tests/fixtures/`.
   Localmente: `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7`.
-- Versionado semver. Tras mergear a main:
-  ```bash
-  git tag v1.2.3 && git tag -f v1 && git push origin v1.2.3 && git push -f origin v1
-  ```
-  Un cambio incompatible en inputs o comportamiento abre `v2`; `v1` no se mueve a él.
+- Versionado semver **automático** (`version.yml`). Cuando `self-test` pasa sobre un push a
+  main, los commits desde el último `vX.Y.Z` deciden el salto según
+  [conventional commits](https://www.conventionalcommits.org/):
+
+  | Commit | Salto |
+  |---|---|
+  | `feat!:`, `fix(x)!:` o `BREAKING CHANGE:` en el cuerpo | major |
+  | `feat:` | minor |
+  | `fix:`, `perf:` | patch |
+  | `docs`, `chore`, `ci`, `test`, `refactor`… | ninguno |
+
+  Crea el tag `vX.Y.Z` con su release y mueve el major (`v1`) al mismo commit. Un cambio
+  incompatible abre `v2`; `v1` no se mueve a él. Los commits de merge se ignoran: cuenta el
+  tipo de los commits del PR.
