@@ -10,6 +10,10 @@ name: staging
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: Etiqueta del runner (p. ej. home-pc). Vacío = vars.CI_RUNNER del repo que llama, y si no hay, ubuntu-latest
+        type: string
+        default: ""
       # --- node-ci ---
       working-directory:
         type: string
@@ -68,6 +72,7 @@ jobs:
   ci:
     uses: ./.github/workflows/node-ci.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       working-directory: ${{ inputs.working-directory }}
       node-version-file: ${{ inputs.node-version-file }}
       node-version: ${{ inputs.node-version }}
@@ -79,6 +84,7 @@ jobs:
     if: inputs.smoke
     uses: ./.github/workflows/image-smoke.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       context: ${{ inputs.context }}
       dockerfile: ${{ inputs.dockerfile }}
       build-args: ${{ inputs.build-args }}
@@ -96,6 +102,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/docker-publish.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       context: ${{ inputs.context }}
       dockerfile: ${{ inputs.dockerfile }}
       service: ${{ inputs.service }}
@@ -106,6 +113,7 @@ jobs:
     needs: publish
     uses: ./.github/workflows/coolify-deploy.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       environment: staging
       environment-url: ${{ inputs.staging-url }}
     secrets: inherit

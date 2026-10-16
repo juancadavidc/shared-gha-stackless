@@ -6,6 +6,10 @@ name: image-smoke
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: Etiqueta del runner (p. ej. home-pc). Vacío = vars.CI_RUNNER del repo que llama, y si no hay, ubuntu-latest
+        type: string
+        default: ""
       context:
         description: Contexto del build de Docker
         type: string
@@ -45,7 +49,7 @@ permissions:
 jobs:
   smoke:
     name: La imagen arranca y responde
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     services:
       postgres:

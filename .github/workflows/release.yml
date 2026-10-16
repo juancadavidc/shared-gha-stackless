@@ -15,6 +15,10 @@ name: release
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: Etiqueta del runner (p. ej. home-pc). Vacío = vars.CI_RUNNER del repo que llama, y si no hay, ubuntu-latest
+        type: string
+        default: ""
       tag:
         description: Tag del pre-release a promover (p. ej. v1.0.0-rc.1)
         type: string
@@ -79,7 +83,7 @@ on:
 jobs:
   prepare:
     name: Validar el tag del pre-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     outputs:
@@ -119,6 +123,7 @@ jobs:
     needs: prepare
     uses: ./.github/workflows/node-ci.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       ref: ${{ needs.prepare.outputs.sha }}
       working-directory: ${{ inputs.working-directory }}
       node-version-file: ${{ inputs.node-version-file }}
@@ -132,6 +137,7 @@ jobs:
     if: inputs.smoke
     uses: ./.github/workflows/image-smoke.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       ref: ${{ needs.prepare.outputs.sha }}
       context: ${{ inputs.context }}
       dockerfile: ${{ inputs.dockerfile }}
@@ -149,6 +155,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/docker-publish.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       ref: ${{ needs.prepare.outputs.sha }}
       context: ${{ inputs.context }}
       dockerfile: ${{ inputs.dockerfile }}
@@ -160,7 +167,7 @@ jobs:
   release:
     name: Crear tag y release final
     needs: [prepare, publish]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:
@@ -186,6 +193,7 @@ jobs:
     needs: release
     uses: ./.github/workflows/coolify-deploy.yml
     with:
+      runs-on: ${{ inputs.runs-on }}
       environment: production
       environment-url: ${{ inputs.production-url }}
       require-secrets: true

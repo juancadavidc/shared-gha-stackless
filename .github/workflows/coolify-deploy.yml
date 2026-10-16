@@ -14,6 +14,10 @@ name: coolify-deploy
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: Etiqueta del runner (p. ej. home-pc). Vacío = vars.CI_RUNNER del repo que llama, y si no hay, ubuntu-latest
+        type: string
+        default: ""
       environment:
         description: Environment de GitHub; `production` usa COOLIFY_PROD_WEBHOOK_URL, cualquier otro COOLIFY_WEBHOOK_URL
         type: string
@@ -42,7 +46,7 @@ on:
 jobs:
   deploy:
     name: Deploy en Coolify (${{ inputs.environment }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions: {}
     environment:
