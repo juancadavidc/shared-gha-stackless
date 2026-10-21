@@ -167,6 +167,29 @@ en cada ruta. Inputs: `context` (`.`), `dockerfile` (`<context>/Dockerfile`), `b
 `health-paths` (`/api/health`), `port` (`3000`), `postgres` (`true`, con el mismo `DATABASE_URL`),
 `ref`.
 
+**`compose-ci.yml`** — levanta un stack de docker compose y exige que cada servicio con
+healthcheck llegue a `healthy` (`docker compose up -d --wait`). Copia `env-file` a `.env` junto al
+compose file (falla si no existe), corre `test-command` con el stack arriba y siempre hace
+`down -v`. Si falla imprime `docker compose ps` y los últimos 200 renglones de logs.
+
+```yaml
+jobs:
+  stack:
+    uses: juancadavidc/shared-gha-stackless/.github/workflows/compose-ci.yml@v1
+    with:
+      compose-file: docker-compose.yml
+      test-command: curl -fsS http://localhost:8080/health
+```
+
+| Input | Default | |
+|-------|---------|--|
+| `runs-on` | — | Igual que `image-smoke`: vacío usa `vars.CI_RUNNER`, y si no, `ubuntu-latest` |
+| `compose-file` | `docker-compose.yml` | Archivo compose |
+| `env-file` | `.env.example` | Se copia a `.env` junto al compose file |
+| `timeout-seconds` | `300` | Espera máxima a `healthy` |
+| `test-command` | — | Comando con el stack arriba; vacío = ninguno |
+| `ref` | evento | Commit a verificar |
+
 **`docker-publish.yml`** — build + push a `ghcr.io/<owner>/<repo>/<service>` (en minúsculas) con
 cada tag de `tags`. Usa el `GITHUB_TOKEN`: el job que llama necesita `packages: write`. Inputs:
 `context`, `dockerfile`, `service` (`web`), `tags` (requerido), `build-args`, `ref`.

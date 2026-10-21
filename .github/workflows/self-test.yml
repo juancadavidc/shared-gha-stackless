@@ -51,3 +51,11 @@ jobs:
       build-args: FIXTURE_BUILD_ARG=horneado
       env: FIXTURE_FLAG=hola
       health-paths: /health /health/db
+
+  compose-ci:
+    uses: ./.github/workflows/compose-ci.yml
+    with:
+      compose-file: tests/fixtures/compose-app/docker-compose.yml
+      env-file: tests/fixtures/compose-app/.env.example
+      timeout-seconds: "120"
+      test-command: curl -fsS http://localhost:18080/
