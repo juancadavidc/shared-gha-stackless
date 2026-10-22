@@ -1,0 +1,89 @@
+name: compose-ci
+
+# Levanta un stack de docker compose, espera a que todos los servicios con healthcheck estén
+# healthy, corre un comando opcional con el stack arriba y siempre lo baja con down -v.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Etiqueta del runner (p. ej. home-pc). Vacío = vars.CI_RUNNER del repo que llama, y si no hay, ubuntu-latest
+        type: string
+        default: ""
+      compose-file:
+        description: Ruta del archivo compose
+        type: string
+        default: docker-compose.yml
+      env-file:
+        description: Archivo de variables; se copia a .env junto al compose file
+        type: string
+        default: .env.example
+      timeout-seconds:
+        description: Segundos máximos de espera a que los servicios queden healthy
+        type: string
+        default: "300"
+      test-command:
+        description: Comando a correr con el stack arriba (vacío = ninguno)
+        type: string
+        default: ""
+      ref:
+        description: Commit, rama o tag a verificar (por defecto, el del evento)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  compose:
+    name: El stack levanta y queda healthy
+    runs-on: ${{ inputs.runs-on || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      COMPOSE_FILE: ${{ inputs.compose-file }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Preparar .env
+        env:
+          ENV_FILE: ${{ inputs.env-file }}
+        run: |
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "::error::No existe env-file '$ENV_FILE'"
+            exit 1
+          fi
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "::error::No existe compose-file '$COMPOSE_FILE'"
+            exit 1
+          fi
+          cp "$ENV_FILE" "$(dirname "$COMPOSE_FILE")/.env"
+
+      - name: Levantar y esperar healthy
+        env:
+          TIMEOUT: ${{ inputs.timeout-seconds }}
+        run: |
+          if ! docker compose up -d --wait --wait-timeout "$TIMEOUT"; then
+            echo "::error::El stack no quedó healthy en ${TIMEOUT} s"
+            docker compose ps -a
+            docker compose logs --no-color --tail 200
+            exit 1
+          fi
+          docker compose ps
+
+      - name: Test
+        if: inputs.test-command != ''
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          if ! bash -e -c "$TEST_COMMAND"; then
+            echo "::error::test-command falló"
+            docker compose ps -a
+            docker compose logs --no-color --tail 200
+            exit 1
+          fi
+
+      - name: Bajar el stack
+        if: always()
+        run: docker compose down -v --remove-orphans
